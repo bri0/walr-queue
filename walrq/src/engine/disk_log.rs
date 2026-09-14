@@ -239,7 +239,9 @@ impl DiskLog {
                     let is_b = bg_flag.load(Ordering::Relaxed);
                     let target_file = if is_b { &mut file_b } else { &mut file_a };
                     target_file.write_all(&batch_buf).unwrap();
-                    target_file.flush().unwrap();
+                    if !waiters.is_empty() {
+                        target_file.flush().unwrap();
+                    }
                     bg_bytes.fetch_add(batch_buf.len() as u64, Ordering::Relaxed);
                     batch_buf.clear();
                 }

@@ -489,14 +489,16 @@ impl QueueEngine {
             visibility_sec
         };
 
-        // 3. Page in from spilled cold disk WAL if ready deque has fewer items than max_messages
+        // 3. Page in from spilled cold disk WAL:
+        // Prefetch ahead if ready deque is low (< max_messages * 2) so consumers never stall
+        let prefetch_threshold = (max_messages as usize).saturating_mul(2).max(200);
         let needs_page_in = match state.queues.get(queue) {
-            Some(q) => q.ready_len() < max_messages as usize,
+            Some(q) => q.ready_len() < prefetch_threshold,
             None => true,
         };
         if needs_page_in {
             drop(state);
-            self.page_in_cold_spill(queue, now, max_messages as usize).await;
+            self.page_in_cold_spill(queue, now, prefetch_threshold).await;
             state = self.shards[s_idx].lock().await;
         }
 
@@ -539,8 +541,8 @@ impl QueueEngine {
         Ok(polled)
     }
 
-    pub async fn page_in_cold_spill(&self, target_queue: &str, now: u64, needed: usize) {
-        let fetch_limit = needed.max(500);
+    pub async fn page_in_cold_spill(&self, _target_queue: &str, now: u64, needed: usize) {
+        let fetch_limit = needed.max(1000);
 
         loop {
             self.disk.flush().await;
@@ -549,51 +551,66 @@ impl QueueEngine {
                 Ok((records, new_offset)) if !records.is_empty() => {
                     self.spill_read_offset.store(new_offset, Ordering::Relaxed);
 
-                    let mut added = 0;
+                    // Group recovered records by shard index to acquire shard locks once
+                    let mut per_shard: [Vec<WalRecord>; 32] = Default::default();
                     for record in records {
-                        if let WalRecord::Push { msg_id, queue_name, visible_at, payload } = record {
-                            let s_idx = Self::shard_idx(&queue_name);
-                            let mut state = self.shards[s_idx].lock().await;
+                        let q_name = match &record {
+                            WalRecord::Push { queue_name, .. } => queue_name,
+                            WalRecord::Ack { queue_name, .. } => queue_name,
+                        };
+                        let s_idx = Self::shard_idx(q_name);
+                        per_shard[s_idx].push(record);
+                    }
 
-                            let already_known = state.messages.contains_key(&msg_id);
-                            let is_acked = state.acked_ids.contains(&msg_id);
+                    let mut added = 0;
+                    for (s_idx, s_records) in per_shard.into_iter().enumerate() {
+                        if s_records.is_empty() {
+                            continue;
+                        }
+                        let mut state = self.shards[s_idx].lock().await;
+                        for record in s_records {
+                            match record {
+                                WalRecord::Push { msg_id, queue_name, visible_at, payload } => {
+                                    let already_known = state.messages.contains_key(&msg_id);
+                                    let is_acked = state.acked_ids.contains(&msg_id);
+                                    let within_horizon = visible_at <= now + HOT_DELAY_HORIZON_SEC;
 
-                            let within_horizon = visible_at <= now + HOT_DELAY_HORIZON_SEC;
+                                    if within_horizon && !already_known && !is_acked {
+                                        let msg = StoredMsg {
+                                            id: msg_id,
+                                            queue: queue_name.clone(),
+                                            payload,
+                                            visible_at,
+                                            delivery_count: 0,
+                                            max_delivery: self.options.max_delivery_count,
+                                        };
 
-                            if within_horizon && !already_known && !is_acked {
-                                let msg = StoredMsg {
-                                    id: msg_id,
-                                    queue: queue_name.clone(),
-                                    payload,
-                                    visible_at,
-                                    delivery_count: 0,
-                                    max_delivery: self.options.max_delivery_count,
-                                };
+                                        state.seen_ids.insert(msg_id);
+                                        state
+                                            .queues
+                                            .entry(queue_name)
+                                            .or_insert_with(|| SingleQueue::new(now))
+                                            .insert(msg_id, visible_at, now);
 
-                                state.seen_ids.insert(msg_id);
-                                state
-                                    .queues
-                                    .entry(queue_name)
-                                    .or_insert_with(|| SingleQueue::new(now))
-                                    .insert(msg_id, visible_at, now);
-
-                                state.messages.insert(msg_id, msg);
-                                added += 1;
-                            }
-                        } else if let WalRecord::Ack { msg_id, queue_name } = record {
-                            let s_idx = Self::shard_idx(&queue_name);
-                            let mut state = self.shards[s_idx].lock().await;
-                            state.acked_ids.insert(msg_id);
-                            if let Some(_) = state.messages.remove(&msg_id) {
-                                if let Some(q) = state.queues.get_mut(&queue_name) {
-                                    q.mark_deleted(&msg_id);
+                                        state.messages.insert(msg_id, msg);
+                                        added += 1;
+                                    }
                                 }
-                                self.total_messages_in_ram.fetch_sub(1, Ordering::Relaxed);
-                            } else if let Some(q) = state.queues.get_mut(&queue_name) {
-                                q.mark_deleted(&msg_id);
+                                WalRecord::Ack { msg_id, queue_name } => {
+                                    state.acked_ids.insert(msg_id);
+                                    if let Some(_) = state.messages.remove(&msg_id) {
+                                        if let Some(q) = state.queues.get_mut(&queue_name) {
+                                            q.mark_deleted(&msg_id);
+                                        }
+                                        self.total_messages_in_ram.fetch_sub(1, Ordering::Relaxed);
+                                    } else if let Some(q) = state.queues.get_mut(&queue_name) {
+                                        q.mark_deleted(&msg_id);
+                                    }
+                                }
                             }
                         }
                     }
+
                     if added > 0 {
                         self.total_messages_in_ram.fetch_add(added, Ordering::Relaxed);
                         break;
