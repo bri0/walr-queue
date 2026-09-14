@@ -541,8 +541,9 @@ impl QueueEngine {
         Ok(polled)
     }
 
-    pub async fn page_in_cold_spill(&self, _target_queue: &str, now: u64, needed: usize) {
+    pub async fn page_in_cold_spill(&self, target_queue: &str, now: u64, needed: usize) {
         let fetch_limit = needed.max(1000);
+        let target_shard = Self::shard_idx(target_queue);
         let mut flushed = false;
 
         loop {
@@ -569,10 +570,12 @@ impl QueueEngine {
                     }
 
                     let mut added = 0;
+                    let mut target_added = 0;
                     for (s_idx, s_records) in per_shard.into_iter().enumerate() {
                         if s_records.is_empty() {
                             continue;
                         }
+                        let is_target = s_idx == target_shard;
                         let mut state = self.shards[s_idx].lock().await;
                         for record in s_records {
                             match record {
@@ -594,12 +597,15 @@ impl QueueEngine {
                                         state.seen_ids.insert(msg_id);
                                         state
                                             .queues
-                                            .entry(queue_name)
+                                            .entry(queue_name.clone())
                                             .or_insert_with(|| SingleQueue::new(now))
                                             .insert(msg_id, visible_at, now);
 
                                         state.messages.insert(msg_id, msg);
                                         added += 1;
+                                        if is_target && queue_name == target_queue {
+                                            target_added += 1;
+                                        }
                                     }
                                 }
                                 WalRecord::Ack { msg_id, queue_name } => {
@@ -619,6 +625,9 @@ impl QueueEngine {
 
                     if added > 0 {
                         self.total_messages_in_ram.fetch_add(added, Ordering::Relaxed);
+                    }
+
+                    if target_added > 0 || self.total_messages_in_ram.load(Ordering::Relaxed) >= self.options.max_hot_messages_in_ram {
                         break;
                     }
                 }
