@@ -1,0 +1,20 @@
+[package]
+name = "walrq"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.43", features = ["full", "test-util"] }
+tokio-stream = "0.1"
+uuid = { version = "1.15", features = ["v4", "serde"] }
+ulid = "1.1"
+zstd = "0.13"
+thiserror = "2.0"
+bytes = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.17"
+postcard = { version = "1.1", features = ["alloc", "use-std"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

@@ -1,0 +1,16 @@
+[package]
+name = "walrq-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.43", features = ["full"] }
+bytes = "1.10"
+thiserror = "2.0"
+ulid = "1.1"
+postcard = { version = "1.1", features = ["alloc", "use-std"] }
+tempfile = "3.17"
+walrq = { path = "../walrq" }
+
+[dev-dependencies]
+tempfile = "3.17"
