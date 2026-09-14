@@ -443,10 +443,11 @@ impl DiskLog {
 
         file.seek(SeekFrom::Start(offset))?;
         let to_read = (file_len - offset).min(1024 * 1024) as usize; // Read up to 1MB chunks
-        let mut raw = vec![0u8; to_read];
+        let mut raw = BytesMut::zeroed(to_read);
         file.read_exact(&mut raw)?;
+        let raw_frozen = raw.freeze();
 
-        let mut cur = &raw[..];
+        let mut cur = &raw_frozen[..];
         let mut records = Vec::new();
         let mut bytes_consumed = 0usize;
 
@@ -480,17 +481,17 @@ impl DiskLog {
                     break;
                 }
 
-                let raw_payload = &cur[..payload_len];
+                let current_offset = to_read - cur.remaining();
                 cur.advance(payload_len);
 
                 let payload_bytes = if is_compressed {
-                    if let Ok(decomp) = zstd::decode_all(raw_payload) {
+                    if let Ok(decomp) = zstd::decode_all(&raw_frozen[current_offset..current_offset + payload_len]) {
                         Bytes::from(decomp)
                     } else {
-                        Bytes::copy_from_slice(raw_payload)
+                        raw_frozen.slice(current_offset..current_offset + payload_len)
                     }
                 } else {
-                    Bytes::copy_from_slice(raw_payload)
+                    raw_frozen.slice(current_offset..current_offset + payload_len)
                 };
 
                 let visible_at = rel_ts as u64 + EPOCH_2020_SEC;
