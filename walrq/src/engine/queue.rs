@@ -551,6 +551,12 @@ impl QueueEngine {
                 Ok((records, new_offset)) if !records.is_empty() => {
                     self.spill_read_offset.store(new_offset, Ordering::Relaxed);
 
+                    // If all read records were ACKs (dead history), advance offset without shard locks if we already have hot messages
+                    let has_pushes = records.iter().any(|r| matches!(r, WalRecord::Push { .. }));
+                    if !has_pushes {
+                        continue;
+                    }
+
                     // Group recovered records by shard index to acquire shard locks once
                     let mut per_shard: [Vec<WalRecord>; 32] = Default::default();
                     for record in records {
