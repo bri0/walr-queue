@@ -121,7 +121,7 @@ pub struct DiskLog {
     registry: Arc<QueueRegistry>,
     active_is_b: Arc<AtomicBool>,
     writer_tx: UnboundedSender<WalCommand>,
-    active_bytes: Arc<AtomicU64>,
+    pub active_bytes: Arc<AtomicU64>,
     pub max_segment_size: u64,
 }
 

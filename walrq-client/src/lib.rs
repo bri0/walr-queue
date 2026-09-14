@@ -250,6 +250,18 @@ impl WalrClient {
         self.push_batch_internal(queue, items).await
     }
 
+    pub async fn push_batch_with_delay(&self, queue: &str, payloads: Vec<Bytes>, delay_seconds: u64) -> Result<Vec<String>, ClientError> {
+        let items: Vec<BatchPushItem> = payloads
+            .into_iter()
+            .map(|p| BatchPushItem {
+                payload: Self::compress_wire_payload(&p),
+                delay_seconds,
+                message_id: Ulid::new().to_string(),
+            })
+            .collect();
+        self.push_batch_internal(queue, items).await
+    }
+
     pub async fn push_batch_with_ids(&self, queue: &str, items: Vec<(Bytes, Option<String>)>) -> Result<Vec<String>, ClientError> {
         let proto_items: Vec<BatchPushItem> = items
             .into_iter()

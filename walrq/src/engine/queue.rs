@@ -765,7 +765,10 @@ impl QueueEngine {
 
 #[inline(always)]
     pub async fn check_and_trigger_compaction(&self) -> Result<(), QueueError> {
-        if self.disk.should_compact() {
+        // Only compact when all spilled disk records have been caught up / drained into memory,
+        // otherwise unread spilled messages on disk would be truncated.
+        let at_eof = self.is_spill_at_eof();
+        if at_eof && self.disk.should_compact() {
             let mut surviving = Vec::new();
             for shard_mutex in &self.shards {
                 let state = shard_mutex.lock().await;
@@ -777,6 +780,12 @@ impl QueueEngine {
             self.spill_read_offset.store(0, Ordering::Release);
         }
         Ok(())
+    }
+
+    fn is_spill_at_eof(&self) -> bool {
+        let cur_offset = self.spill_read_offset.load(Ordering::Relaxed);
+        let active_bytes = self.disk.active_bytes.load(Ordering::Relaxed);
+        cur_offset >= active_bytes
     }
 
     pub async fn force_compaction(&self) -> Result<(), QueueError> {
