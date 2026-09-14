@@ -101,6 +101,16 @@ Returned inside `Response::Poll`:
 
 ---
 
+### 4.3 Client-Side Compression Framing
+
+To optimize network bandwidth and eliminate server-side CPU bottlenecks, `walrq-client` applies transparent client-side compression:
+- **Uncompressed payload**: Byte `0x00` followed by raw payload bytes.
+- **Compressed payload** (when `len > 1024` and compression reduces size): Byte `0x01` followed by `zstd` compressed bytes.
+
+The server passes through the framed payload bytes without decompressing or modifying them, storing them directly in the sequential WAL and serving them to pollers.
+
+---
+
 ## 5. Cluster Routing & Leader Redirect Protocol
 
 Walrq uses Raft quorum. Writes and reads must route to the active cluster Leader:

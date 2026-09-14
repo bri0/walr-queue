@@ -268,39 +268,15 @@ impl DiskLog {
 
     #[inline(always)]
     fn encode_push(buf: &mut BytesMut, msg_id: Ulid, q_id: u16, visible_at: u64, payload: &[u8]) {
-        // Only compress if payload is large enough (> 1024 bytes) to amortize zstd CPU overhead
-        let (is_compressed, compressed_opt) = if payload.len() > 1024 {
-            if let Ok(compressed) = zstd::encode_all(payload, 1) {
-                if compressed.len() < payload.len() {
-                    (true, Some(compressed))
-                } else {
-                    (false, None)
-                }
-            } else {
-                (false, None)
-            }
-        } else {
-            (false, None)
-        };
-
-        let mut flags = 0u8;
-        if is_compressed {
-            flags |= 0x02;
-        }
-
+        let flags = 0u8;
         let rel_ts = (visible_at.saturating_sub(EPOCH_2020_SEC)) as u32;
 
         buf.put_u8(flags);
         buf.put_u128(msg_id.0);
         buf.put_u32(rel_ts);
         buf.put_u16(q_id);
-        if let Some(comp) = compressed_opt {
-            buf.put_u32(comp.len() as u32);
-            buf.put_slice(&comp);
-        } else {
-            buf.put_u32(payload.len() as u32);
-            buf.put_slice(payload);
-        }
+        buf.put_u32(payload.len() as u32);
+        buf.put_slice(payload);
     }
 
     #[inline(always)]

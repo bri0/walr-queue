@@ -145,6 +145,37 @@ impl WalrClient {
         }
     }
 
+    #[inline(always)]
+    fn compress_wire_payload(payload: &[u8]) -> Vec<u8> {
+        if payload.len() > 1024 {
+            if let Ok(comp) = zstd::encode_all(payload, 1) {
+                if comp.len() + 1 < payload.len() {
+                    let mut out = Vec::with_capacity(comp.len() + 1);
+                    out.push(0x01); // 0x01 = zstd compressed by client
+                    out.extend_from_slice(&comp);
+                    return out;
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(payload.len() + 1);
+        out.push(0x00); // 0x00 = uncompressed
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[inline(always)]
+    fn decompress_wire_payload(raw: Vec<u8>) -> Vec<u8> {
+        if raw.is_empty() {
+            return raw;
+        }
+        if raw[0] == 0x01 {
+            if let Ok(decomp) = zstd::decode_all(&raw[1..]) {
+                return decomp;
+            }
+        }
+        raw[1..].to_vec()
+    }
+
     pub async fn update_seeds(&self, seeds: Vec<String>) {
         let mut s = self.inner.seed_nodes.write().await;
         *s = seeds;
@@ -195,7 +226,7 @@ impl WalrClient {
         let message_id = message_id.unwrap_or_else(|| Ulid::new().to_string());
         let req = Request::Push {
             queue_name: queue.to_string(),
-            payload: payload.into(),
+            payload: Self::compress_wire_payload(&payload),
             delay_seconds,
             message_id,
         };
@@ -211,7 +242,7 @@ impl WalrClient {
         let items: Vec<BatchPushItem> = payloads
             .into_iter()
             .map(|p| BatchPushItem {
-                payload: p.into(),
+                payload: Self::compress_wire_payload(&p),
                 delay_seconds: 0,
                 message_id: Ulid::new().to_string(),
             })
@@ -223,7 +254,7 @@ impl WalrClient {
         let proto_items: Vec<BatchPushItem> = items
             .into_iter()
             .map(|(p, id)| BatchPushItem {
-                payload: p.into(),
+                payload: Self::compress_wire_payload(&p),
                 delay_seconds: 0,
                 message_id: id.unwrap_or_else(|| Ulid::new().to_string()),
             })
@@ -255,7 +286,7 @@ impl WalrClient {
         for (mid, payload, delay_seconds, tx) in items {
             senders.push(tx);
             proto_items.push(BatchPushItem {
-                payload: payload.into(),
+                payload: Self::compress_wire_payload(&payload),
                 delay_seconds,
                 message_id: mid.unwrap_or_else(|| Ulid::new().to_string()),
             });
@@ -293,7 +324,13 @@ impl WalrClient {
         };
 
         match self.inner.send_with_redirect(queue, req).await? {
-            Response::Poll { messages } => Ok(messages),
+            Response::Poll { messages } => {
+                let decompressed = messages.into_iter().map(|mut m| {
+                    m.payload = Self::decompress_wire_payload(m.payload);
+                    m
+                }).collect();
+                Ok(decompressed)
+            }
             Response::Error { message } => Err(ClientError::ServerError(message)),
             other => Err(ClientError::ServerError(format!("Unexpected response: {:?}", other))),
         }

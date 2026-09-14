@@ -666,6 +666,7 @@ dependencies = [
  "tokio",
  "ulid",
  "walrq",
+ "zstd",
 ]
 
 [[package]]
