@@ -543,9 +543,9 @@ impl QueueEngine {
 
     pub async fn page_in_cold_spill(&self, _target_queue: &str, now: u64, needed: usize) {
         let fetch_limit = needed.max(1000);
+        let mut flushed = false;
 
         loop {
-            self.disk.flush().await;
             let cur_offset = self.spill_read_offset.load(Ordering::Relaxed);
             match self.disk.read_entries_from_offset(cur_offset, fetch_limit) {
                 Ok((records, new_offset)) if !records.is_empty() => {
@@ -616,9 +616,16 @@ impl QueueEngine {
                         break;
                     }
                 }
-                Ok((records, new_offset)) if records.is_empty() && new_offset > 0 => {
-                    // Reached end of file; wrap around scan offset so future matured spills can be paged in
-                    self.spill_read_offset.store(0, Ordering::Relaxed);
+                Ok((records, new_offset)) if records.is_empty() => {
+                    if !flushed {
+                        self.disk.flush().await;
+                        flushed = true;
+                        continue;
+                    }
+                    if new_offset > 0 {
+                        // Reached end of file; wrap around scan offset so future matured spills can be paged in
+                        self.spill_read_offset.store(0, Ordering::Relaxed);
+                    }
                     break;
                 }
                 Ok((_, new_offset)) if new_offset != cur_offset => {
