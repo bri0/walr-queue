@@ -559,7 +559,8 @@ impl QueueEngine {
                     }
 
                     // Group recovered records by shard index to acquire shard locks once
-                    let mut per_shard: [Vec<WalRecord>; 32] = Default::default();
+                    const EMPTY_VEC: Vec<WalRecord> = Vec::new();
+                    let mut per_shard: [Vec<WalRecord>; 32] = [EMPTY_VEC; 32];
                     for record in records {
                         let q_name = match &record {
                             WalRecord::Push { queue_name, .. } => queue_name,
