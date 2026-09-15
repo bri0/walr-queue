@@ -263,5 +263,4 @@ If you are writing worker code that consumes messages from `walrq`, here is what
 ---
 
 ## 📄 License
-## 📄 License
 This project is licensed under the [MIT License](LICENSE) — free to use, copy, modify, and distribute, with attribution required to the original repository.
